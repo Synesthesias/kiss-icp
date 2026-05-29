@@ -83,6 +83,11 @@ private:
     ros::Publisher map_publisher_;
     ros::Publisher traj_publisher_;
     nav_msgs::Path path_msg_;
+    ros::Time last_time_{};
+    Sophus::SE3d last_pose_{};
+    Sophus::SE3d::Tangent last_twist_{Sophus::SE3d::Tangent::Zero()};
+    bool has_last_pose_{false};
+    double twist_ema_alpha_{0.2};
 
     /// KISS-ICP
     kiss_icp::pipeline::KissICP odometry_;

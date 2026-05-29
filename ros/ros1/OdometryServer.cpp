@@ -21,6 +21,8 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 #include <Eigen/Core>
+#include <algorithm>
+#include <limits>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -56,6 +58,7 @@ OdometryServer::OdometryServer(const ros::NodeHandle &nh, const ros::NodeHandle 
     pnh_.param("odom_frame", odom_frame_, odom_frame_);
     pnh_.param("publish_odom_tf", publish_odom_tf_, false);
     pnh_.param("visualize", publish_debug_clouds_, publish_debug_clouds_);
+    pnh_.param("twist_ema_alpha", twist_ema_alpha_, twist_ema_alpha_);
     pnh_.param("max_range", config_.max_range, config_.max_range);
     pnh_.param("min_range", config_.min_range, config_.min_range);
     pnh_.param("deskew", config_.deskew, config_.deskew);
@@ -63,6 +66,11 @@ OdometryServer::OdometryServer(const ros::NodeHandle &nh, const ros::NodeHandle 
     pnh_.param("max_points_per_voxel", config_.max_points_per_voxel, config_.max_points_per_voxel);
     pnh_.param("initial_threshold", config_.initial_threshold, config_.initial_threshold);
     pnh_.param("min_motion_th", config_.min_motion_th, config_.min_motion_th);
+    if (twist_ema_alpha_ < 0.0 || twist_ema_alpha_ > 1.0) {
+        ROS_WARN("twist_ema_alpha must be in [0.0, 1.0]. Clamping %.3f to the valid range.",
+                 twist_ema_alpha_);
+        twist_ema_alpha_ = std::clamp(twist_ema_alpha_, 0.0, 1.0);
+    }
     if (config_.max_range < config_.min_range) {
         ROS_WARN("[WARNING] max_range is smaller than min_range, setting min_range to 0.0");
         config_.min_range = 0.0;
@@ -144,6 +152,24 @@ void OdometryServer::RegisterFrame(const sensor_msgs::PointCloud2::ConstPtr &msg
 void OdometryServer::PublishOdometry(const Sophus::SE3d &pose,
                                      const ros::Time &stamp,
                                      const std::string &cloud_frame_id) {
+    const std::string child_frame_id = base_frame_.empty() ? cloud_frame_id : base_frame_;
+
+    Sophus::SE3d::Tangent filtered_twist = Sophus::SE3d::Tangent::Zero();
+    const bool has_valid_dt = has_last_pose_ && stamp > last_time_;
+    if (has_valid_dt) {
+        const double dt = (stamp - last_time_).toSec();
+        if (dt > std::numeric_limits<double>::epsilon()) {
+            // Relative motion in the odometry child frame yields the body-frame twist expected by nav_msgs/Odometry.
+            const Sophus::SE3d relative_motion = last_pose_.inverse() * pose;
+            const Sophus::SE3d::Tangent current_twist = relative_motion.log() / dt;
+            filtered_twist = twist_ema_alpha_ * current_twist +
+                             (1.0 - twist_ema_alpha_) * last_twist_;
+        }
+    } else if (has_last_pose_) {
+        ROS_WARN_THROTTLE(1.0,
+                          "Skipping twist update because odometry timestamps are not strictly increasing");
+    }
+
     // Header for point clouds and stuff seen from desired odom_frame
 
     // Broadcast the tf
@@ -151,7 +177,7 @@ void OdometryServer::PublishOdometry(const Sophus::SE3d &pose,
         geometry_msgs::TransformStamped transform_msg;
         transform_msg.header.stamp = stamp;
         transform_msg.header.frame_id = odom_frame_;
-        transform_msg.child_frame_id = base_frame_.empty() ? cloud_frame_id : base_frame_;
+        transform_msg.child_frame_id = child_frame_id;
         transform_msg.transform = tf2::sophusToTransform(pose);
         tf_broadcaster_.sendTransform(transform_msg);
     }
@@ -168,8 +194,24 @@ void OdometryServer::PublishOdometry(const Sophus::SE3d &pose,
     nav_msgs::Odometry odom_msg;
     odom_msg.header.stamp = stamp;
     odom_msg.header.frame_id = odom_frame_;
+    odom_msg.child_frame_id = child_frame_id;
     odom_msg.pose.pose = tf2::sophusToPose(pose);
+    const Eigen::Vector3d linear_velocity = filtered_twist.head<3>();
+    const Eigen::Vector3d angular_velocity = filtered_twist.tail<3>();
+    odom_msg.twist.twist.linear.x = linear_velocity.x();
+    odom_msg.twist.twist.linear.y = linear_velocity.y();
+    odom_msg.twist.twist.linear.z = linear_velocity.z();
+    odom_msg.twist.twist.angular.x = angular_velocity.x();
+    odom_msg.twist.twist.angular.y = angular_velocity.y();
+    odom_msg.twist.twist.angular.z = angular_velocity.z();
     odom_publisher_.publish(odom_msg);
+
+    if (!has_last_pose_ || has_valid_dt) {
+        last_time_ = stamp;
+        last_pose_ = pose;
+        last_twist_ = filtered_twist;
+        has_last_pose_ = true;
+    }
 }
 
 void OdometryServer::PublishClouds(const std::vector<Eigen::Vector3d> frame,
