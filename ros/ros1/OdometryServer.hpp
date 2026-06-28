@@ -78,6 +78,7 @@ private:
 
     /// Data publishers.
     ros::Publisher odom_publisher_;
+    ros::Publisher twist_publisher_;
     ros::Publisher frame_publisher_;
     ros::Publisher kpoints_publisher_;
     ros::Publisher map_publisher_;

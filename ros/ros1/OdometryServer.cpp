@@ -37,6 +37,7 @@
 // ROS 1 headers
 #include <geometry_msgs/PoseStamped.h>
 #include <geometry_msgs/TransformStamped.h>
+#include <geometry_msgs/TwistWithCovarianceStamped.h>
 #include <nav_msgs/Odometry.h>
 #include <nav_msgs/Path.h>
 #include <ros/init.h>
@@ -86,6 +87,7 @@ OdometryServer::OdometryServer(const ros::NodeHandle &nh, const ros::NodeHandle 
     // Initialize publishers
     odom_publisher_ = pnh_.advertise<nav_msgs::Odometry>("/kiss/odometry", queue_size_);
     traj_publisher_ = pnh_.advertise<nav_msgs::Path>("/kiss/trajectory", queue_size_);
+    twist_publisher_ = pnh_.advertise<geometry_msgs::TwistWithCovarianceStamped>("/kiss/twist", queue_size_);
     if (publish_debug_clouds_) {
         frame_publisher_ = pnh_.advertise<sensor_msgs::PointCloud2>("/kiss/frame", queue_size_);
         kpoints_publisher_ =
@@ -205,6 +207,18 @@ void OdometryServer::PublishOdometry(const Sophus::SE3d &pose,
     odom_msg.twist.twist.angular.y = angular_velocity.y();
     odom_msg.twist.twist.angular.z = angular_velocity.z();
     odom_publisher_.publish(odom_msg);
+
+    // publish twist msg
+    geometry_msgs::TwistWithCovarianceStamped twist_msg;
+    twist_msg.header.stamp = stamp;
+    twist_msg.header.frame_id = child_frame_id;
+    twist_msg.twist.twist.linear.x = linear_velocity.x();
+    twist_msg.twist.twist.linear.y = linear_velocity.y();
+    twist_msg.twist.twist.linear.z = linear_velocity.z();
+    twist_msg.twist.twist.angular.x = angular_velocity.x();
+    twist_msg.twist.twist.angular.y = angular_velocity.y();
+    twist_msg.twist.twist.angular.z = angular_velocity.z();
+    twist_publisher_.publish(twist_msg);
 
     if (!has_last_pose_ || has_valid_dt) {
         last_time_ = stamp;
