@@ -368,3 +368,4 @@ nn
 
 # VSCode
 .vscode
+**/.claude/settings.local.json
